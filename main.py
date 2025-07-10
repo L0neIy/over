@@ -109,3 +109,7 @@ threading.Thread(target=run_bot, daemon=True).start()
 @app.get("/")
 def read_root():
     return {"status": "OverHuman Commander is running"}
+
+# === HOLD MAIN THREAD ===
+while True:
+    time.sleep(10)
