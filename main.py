@@ -1,12 +1,11 @@
 
 import os
 import time
-import requests
 import hmac
 import hashlib
+import requests
 import json
-import threading
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import telebot
 
 # === ENVIRONMENT VARIABLES ===
@@ -14,10 +13,13 @@ API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+APP_URL = os.getenv("APP_URL")  # ใช้ domain ของ Railway เช่น https://xxx.up.railway.app
 
 BASE_URL = "https://fapi.binance.com"
-app = FastAPI()
 bot = telebot.TeleBot(BOT_TOKEN)
+app = FastAPI()
+
+trading_active = False
 
 # === SIGNAL ENGINE ===
 def get_price():
@@ -42,7 +44,6 @@ def check_signal():
         return "SHORT"
     return None
 
-# === BINANCE FUTURES EXECUTION ===
 def send_order(side: str, quantity=0.01):
     url = f"{BASE_URL}/fapi/v1/order"
     timestamp = int(time.time() * 1000)
@@ -60,33 +61,13 @@ def send_order(side: str, quantity=0.01):
     res = requests.post(final_url, headers=headers)
     return res.json()
 
-# === CORE LOGIC ===
-trading_active = False
-
-def trading_loop():
-    global trading_active
-    bot.send_message(CHAT_ID, "🤖 เริ่มระบบ OverHuman Commander แล้ว!")
-    while trading_active:
-        signal = check_signal()
-        price = get_price()
-        if signal == "LONG":
-            result = send_order("BUY")
-            bot.send_message(CHAT_ID, f"✅ เข้า LONG @ {price}\n{result}")
-        elif signal == "SHORT":
-            result = send_order("SELL")
-            bot.send_message(CHAT_ID, f"✅ เข้า SHORT @ {price}\n{result}")
-        else:
-            bot.send_message(CHAT_ID, f"📊 ยังไม่มีสัญญาณ | BTC = {price}")
-        time.sleep(60)
-
-# === TELEGRAM COMMANDS ===
+# === TELEGRAM HANDLERS ===
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     global trading_active
     if not trading_active:
         trading_active = True
-        threading.Thread(target=trading_loop).start()
-        bot.reply_to(message, "✅ เริ่มระบบแล้ว")
+        bot.reply_to(message, "✅ เริ่มระบบแล้ว (Webhook)")
     else:
         bot.reply_to(message, "🚀 ระบบกำลังทำงานอยู่แล้ว")
 
@@ -98,18 +79,24 @@ def stop_handler(message):
 
 @bot.message_handler(commands=['status'])
 def status_handler(message):
-    bot.reply_to(message, f"📡 ระบบกำลัง {'ทำงานอยู่ ✅' if trading_active else 'หยุดอยู่ 🛑'}")
+    bot.reply_to(message, f"📡 ระบบกำลัง {'ทำงาน ✅' if trading_active else 'หยุดอยู่ 🛑'}")
 
-# === BACKGROUND THREAD FOR BOT ===
-def run_bot():
-    bot.polling(non_stop=True)
-
-threading.Thread(target=run_bot, daemon=True).start()
-
+# === FASTAPI ROUTES ===
 @app.get("/")
-def read_root():
-    return {"status": "OverHuman Commander is running"}
+def root():
+    return {"message": "OverHuman Commander Webhook Active"}
 
-# === HOLD MAIN THREAD ===
-while True:
-    time.sleep(10)
+@app.post("/webhook")
+async def telegram_webhook(req: Request):
+    body = await req.body()
+    update = telebot.types.Update.de_json(body.decode("utf-8"))
+    bot.process_new_updates([update])
+    return {"ok": True}
+
+@app.on_event("startup")
+async def startup_event():
+    # Delete old webhook (ถ้ามี)
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+    # ตั้ง webhook ใหม่
+    webhook_url = f"{APP_URL}/webhook"
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={webhook_url}")
